@@ -1,8 +1,21 @@
 // I2C device class (I2Cdev) demonstration Arduino sketch for MPU6050 class using DMP (MotionApps v2.0)
 // 6/21/2012 by Jeff Rowberg <jeff@rowberg.net>
-
-
-// This code modification of logging data into a SD card is done by Anmol Shrivastava, Sharath Srinivasan and Venkat Subramaniyam 
+// 
+//
+// Changelog:
+//      2013-05-08 - added seamless Fastwire support
+//                 - added note about gyro calibration
+//      2012-06-21 - added note about Arduino 1.0.1 + Leonardo compatibility error
+//      2012-06-20 - improved FIFO overflow handling and simplified read process
+//      2012-06-19 - completely rearranged DMP initialization code and simplification
+//      2012-06-13 - pull gyro and accel data from FIFO packet instead of reading directly
+//      2012-06-09 - fix broken FIFO read sequence and change interrupt detection to RISING
+//      2012-06-05 - add gravity-compensated initial reference frame acceleration output
+//                 - add 3D math helper file to DMP6 example sketch
+//                 - add Euler output and Yaw/Pitch/Roll output formats
+//      2012-06-04 - remove accel offset clearing for better results (thanks Sungon Lee)
+//      2012-06-01 - fixed gyro sensitivity to be 2000 deg/sec instead of 250
+//      2012-05-30 - basic DMP initialization working
 
 /* ============================================
 I2Cdev device library code is placed under the MIT license
@@ -34,6 +47,11 @@ THE SOFTWARE.
 #include <SPI.h>
 #include <SD.h>
 #include "MPU6050_6Axis_MotionApps20.h"
+#include "Servo.h"
+#include "Wire.h"
+//#include "MPU6050.h" // not necessary if using MotionApps include file
+Servo myservo;
+int pos=0;
 //#include "MPU6050.h" // not necessary if using MotionApps include file
 
 // Arduino Wire library is required if I2Cdev I2CDEV_ARDUINO_WIRE implementation
@@ -66,6 +84,20 @@ MPU6050 mpu;
    http://arduino.cc/forum/index.php/topic,109987.0.html
    http://code.google.com/p/arduino/issues/detail?id=958
  * ========================================================================= */
+
+
+
+// uncomment "OUTPUT_READABLE_QUATERNION" if you want to see the actual
+// quaternion components in a [w, x, y, z] format (not best for parsing
+// on a remote host such as Processing or something though)
+//#define OUTPUT_READABLE_QUATERNION
+
+// uncomment "OUTPUT_READABLE_EULER" if you want to see Euler angles
+// (in degrees) calculated from the quaternions coming from the FIFO.
+// Note that Euler angles suffer from gimbal lock (for more info, see
+// http://en.wikipedia.org/wiki/Gimbal_lock)
+//#define OUTPUT_READABLE_EULER
+
 // uncomment "OUTPUT_READABLE_YAWPITCHROLL" if you want to see the yaw/
 // pitch/roll angles (in degrees) calculated from the quaternions coming
 // from the FIFO. Note this also requires gravity vector calculations.
@@ -73,6 +105,22 @@ MPU6050 mpu;
 // more info, see: http://en.wikipedia.org/wiki/Gimbal_lock)
 #define OUTPUT_READABLE_YAWPITCHROLL
 
+// uncomment "OUTPUT_READABLE_REALACCEL" if you want to see acceleration
+// components with gravity removed. This acceleration reference frame is
+// not compensated for orientation, so +X is always +X according to the
+// sensor, just without the effects of gravity. If you want acceleration
+// compensated for orientation, us OUTPUT_READABLE_WORLDACCEL instead.
+//#define OUTPUT_READABLE_REALACCEL
+
+// uncomment "OUTPUT_READABLE_WORLDACCEL" if you want to see acceleration
+// components with gravity removed and adjusted for the world frame of
+// reference (yaw is relative to initial orientation, since no magnetometer
+// is present in this case). Could be quite handy in some cases.
+//#define OUTPUT_READABLE_WORLDACCEL
+
+// uncomment "OUTPUT_TEAPOT" if you want output that matches the
+// format used for the InvenSense teapot demo
+//#define OUTPUT_TEAPOT
 
 
 const int chipSelect = 4;
@@ -83,7 +131,6 @@ bool blinkState = false;
 // for calculating the time since when the arduino started 
  double timing;
  double timing1;
-
 // MPU control/status vars
 bool dmpReady = false;  // set true if DMP init was successful
 uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
@@ -103,8 +150,14 @@ float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gra
 boolean start=0;        // used for the first attempt to calculate elapsed time
 // packet structure for InvenSense teapot demo
 uint8_t teapotPacket[14] = { '$', 0x02, 0,0, 0,0, 0,0, 0,0, 0x00, 0x00, '\r', '\n' };
+  
+///////////////////////////////////////  RC Transmitter //////////////////////////////////////
 
-
+int pin1 = 7;
+int pin2 = 8;
+int pin3 = 9;
+int pin4 = 10;
+unsigned long duration1, duration2, duration3,duration4;
 
 // ================================================================
 // ===               INTERRUPT DETECTION ROUTINE                ===
@@ -122,6 +175,11 @@ void dmpDataReady() {
 // ================================================================
 
 void setup() {
+
+     pinMode(pin1, INPUT);
+     pinMode(pin2, INPUT);
+     pinMode(pin3, INPUT);
+     pinMode(pin4, INPUT);
     // join I2C bus (I2Cdev library doesn't do this automatically)
     #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
         Wire.begin();
@@ -159,7 +217,7 @@ void setup() {
     // load and configure the DMP
     Serial.println(F("Initializing DMP..."));
     devStatus = mpu.dmpInitialize();
-/////////////////////////////////////////////////    SD   CARD  SETUP   //////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     Serial.print("Initializing SD card...");
 
   // see if the card is present and can be initialized:
@@ -169,7 +227,7 @@ void setup() {
     return;
   }
   Serial.println("card initialized.");
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////  
     // supply your own gyro offsets here, scaled for min sensitivity
     mpu.setXGyroOffset(220);
     mpu.setYGyroOffset(76);
@@ -205,15 +263,25 @@ void setup() {
 
     // configure LED for output
     pinMode(LED_PIN, OUTPUT);
+    myservo.attach(9);
 }
 
-
+int complete=0;
+double timing_sec;
 
 // ================================================================
 // ===                    MAIN PROGRAM LOOP                     ===
 // ================================================================
 
 void loop() {
+
+      ///////////////////////////////////////// RC Transmitter Values//////////////////////////////
+
+  
+      
+  
+
+  
     // if programming failed, don't try to do anything
     if (!dmpReady) return;
 
@@ -254,13 +322,54 @@ void loop() {
         // (this lets us immediately read more without waiting for an interrupt)
         fifoCount -= packetSize;
 
-       
+     
+
+      
+      
+      
+      
+      
+      
+      /*  #ifdef OUTPUT_READABLE_QUATERNION
+            // display quaternion values in easy matrix form: w x y z
+            mpu.dmpGetQuaternion(&q, fifoBuffer);
+            Serial.print("quat\t");
+            Serial.print(q.w);
+            Serial.print("\t");
+            Serial.print(q.x);
+            Serial.print("\t");
+            Serial.print(q.y);
+            Serial.print("\t");
+            Serial.println(q.z);
+        #endif
+
+        #ifdef OUTPUT_READABLE_EULER
+            // display Euler angles in degrees
+            mpu.dmpGetQuaternion(&q, fifoBuffer);
+            mpu.dmpGetEuler(euler, &q);
+            Serial.print("euler\t");
+            Serial.print(euler[0] * 180/M_PI);
+            Serial.print("\t");
+            Serial.print(euler[1] * 180/M_PI);
+            Serial.print("\t");
+            Serial.println(euler[2] * 180/M_PI);
+        #endif
+*/
         #ifdef OUTPUT_READABLE_YAWPITCHROLL
             // display Euler angles in degrees
+
+            if (complete==0)
+            myservo.write(20);
+            
+            if (complete==1)
+            myservo.write(90);
+
+            
             mpu.dmpGetQuaternion(&q, fifoBuffer);
             mpu.dmpGetGravity(&gravity, &q);
             mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-            Serial.print("ypr timing\t");
+              
+            Serial.print("ypr  time\t");
             Serial.print(ypr[0] * 180/M_PI);
             Serial.print("\t");
             Serial.print(ypr[1] * 180/M_PI);
@@ -273,19 +382,78 @@ void loop() {
               start=1;  
             }
             timing=timing-timing1;
-            Serial.println(timing/1000);
+            timing_sec = timing/1000;
+            Serial.println(timing_sec);
+            if((timing_sec)/5.0 == 0.0)  complete=1;
+            if((timing_sec)/5.0 == 0.0 && (timing_sec)/10.0 == 0.0)  complete=0; 
         #endif
 
-       
-     
+  /*      #ifdef OUTPUT_READABLE_REALACCEL
+            // display real acceleration, adjusted to remove gravity
+            mpu.dmpGetQuaternion(&q, fifoBuffer);
+            mpu.dmpGetAccel(&aa, fifoBuffer);
+            mpu.dmpGetGravity(&gravity, &q);
+            mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
+            Serial.print("areal\t");
+            Serial.print(aaReal.x);
+            Serial.print("\t");
+            Serial.print(aaReal.y);
+            Serial.print("\t");
+            Serial.println(aaReal.z);
+        #endif
 
+        #ifdef OUTPUT_READABLE_WORLDACCEL
+            // display initial world-frame acceleration, adjusted to remove gravity
+            // and rotated based on known orientation from quaternion
+            mpu.dmpGetQuaternion(&q, fifoBuffer);
+            mpu.dmpGetAccel(&aa, fifoBuffer);
+            mpu.dmpGetGravity(&gravity, &q);
+            mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
+            mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+            Serial.print("aworld\t");
+            Serial.print(aaWorld.x);
+            Serial.print("\t");
+            Serial.print(aaWorld.y);
+            Serial.print("\t");
+            Serial.println(aaWorld.z);
+        #endif
+*/    
+        /*#ifdef OUTPUT_TEAPOT
+            // display quaternion values in InvenSense Teapot demo format:
+            teapotPacket[2] = fifoBuffer[0];
+            teapotPacket[3] = fifoBuffer[1];
+            teapotPacket[4] = fifoBuffer[4];
+            teapotPacket[5] = fifoBuffer[5];
+            teapotPacket[6] = fifoBuffer[8];
+            teapotPacket[7] = fifoBuffer[9];
+            teapotPacket[8] = fifoBuffer[12];
+            teapotPacket[9] = fifoBuffer[13];
+            Serial.write(teapotPacket, 14);
+            teapotPacket[11]++; // packetCount, loops at 0xFF on purpose
+        #endif
+*/
         // blink LED to indicate activity
         blinkState = !blinkState;
         digitalWrite(LED_PIN, blinkState);
-        
+
+      /*  duration1 = pulseIn(pin1, HIGH);
+duration2 = pulseIn(pin2, HIGH);
+        duration3 = pulseIn(pin3, HIGH);
+        duration4 = pulseIn(pin4, HIGH);
+  Serial.print("R-P-T-Y");
+              Serial.print("\t \t");
+              Serial.print(duration1);
+              Serial.print("\t");
+              Serial.print(duration2);
+              Serial.print("\t");
+              Serial.print(duration3);
+              Serial.print("\t");
+              Serial.print(duration4);
+              Serial.print("\t");
+        */
     }
 
-/////////////////////////////////////   SD   CARD   STORAGE   CODE  /////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // make a string for assembling the data to log:
   String dataString = "";
 
@@ -293,14 +461,18 @@ void loop() {
   for (int count = 0; count < 3; count++) {
     //int sensor = analogRead(analogPin);
     dataString += String(ypr[count]);
-    if (count < 2) {
+    if (count < 3) {
       dataString += " ";
     }
+    
   }
-
+  
+  
+   dataString += String(timing1/1000);
+  
   // open the file. note that only one file can be open at a time,
   // so you have to close this one before opening another.
-  File dataFile = SD.open("readings.txt", FILE_WRITE);
+  File dataFile = SD.open("datalog.txt", FILE_WRITE);
 
   // if the file is available, write to it:
   if (dataFile) {
